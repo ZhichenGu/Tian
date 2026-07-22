@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 舵机控制台</title>
+<script src="https://unpkg.com/mqtt@5.7.0/dist/mqtt.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --card:#171a21; --line:#262b36; --tx:#e6e9ef; --dim:#8b93a3;
+    --acc:#4f8cff; --ok:#2ecc71; --err:#ff5c5c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+       padding:24px 16px 60px}
+  .wrap{max-width:620px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:16px;margin-bottom:14px}
+  .card.off{opacity:.45;pointer-events:none}
+  .hd{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-weight:600}
+  .n{width:22px;height:22px;border-radius:50%;background:var(--acc);color:#fff;
+     font-size:12px;display:grid;place-items:center;flex:none}
+  .dot{width:8px;height:8px;border-radius:50%;background:#555;margin-left:auto}
+  .dot.on{background:var(--ok)} .dot.bad{background:var(--err)}
+  label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
+  input,select{width:100%;background:#0d0f14;border:1px solid var(--line);color:var(--tx);
+        border-radius:8px;padding:9px 10px;font-size:14px;outline:none}
+  input:focus,select:focus{border-color:var(--acc)}
+  button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 16px;
+         font-size:14px;font-weight:600;cursor:pointer;margin-top:12px}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:#232833}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row>*{flex:1}
+  .msg{font-size:12px;color:var(--dim);margin-top:10px;min-height:16px;word-break:break-all}
+  .msg.err{color:var(--err)} .msg.ok{color:var(--ok)}
+  .srv{margin-top:18px}
+  .srv .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+  .val{font-variant-numeric:tabular-nums;color:var(--acc);font-weight:600}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:6px;padding:0;
+        background:#2a2f3b;border:0;border-radius:3px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;
+        border-radius:50%;background:var(--acc);cursor:pointer;border:3px solid #0f1115}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
+        background:var(--acc);cursor:pointer;border:3px solid #0f1115}
+  #log{background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;
+       height:130px;overflow:auto;font:11px/1.6 ui-monospace,Menlo,monospace;color:var(--dim);
+       white-space:pre-wrap;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ESP32 舵机控制台</h1>
+  <div class="sub">蓝牙配网 → HiveMQ → 双舵机 (D18 / D19)</div>
+
+  <!-- 1. 蓝牙 -->
+  <div class="card" id="c1">
+    <div class="hd"><span class="n">1</span>蓝牙连接<span class="dot" id="d1"></span></div>
+    <div class="row">
+      <button id="btBtn">连接 ESP32</button>
+      <button id="btOff" class="ghost" disabled>断开</button>
+    </div>
+    <div class="msg" id="m1">需要 Chrome / Edge，且页面为 https 或 localhost</div>
+  </div>
+
+  <!-- 2. WiFi -->
+  <div class="card off" id="c2">
+    <div class="hd"><span class="n">2</span>WiFi 配网<span class="dot" id="d2"></span></div>
+    <button id="scanBtn" class="ghost">扫描 WiFi</button>
+    <label>选择网络</label>
+    <select id="ssidSel"><option value="">— 先扫描 —</option></select>
+    <label>密码</label>
+    <input id="wifiPass" type="password" placeholder="WiFi 密码" autocomplete="off">
+    <button id="wifiBtn">连接 WiFi</button>
+    <div class="msg" id="m2"></div>
+  </div>
+
+  <!-- 3. MQTT -->
+  <div class="card off" id="c3">
+    <div class="hd"><span class="n">3</span>HiveMQ Cloud<span class="dot" id="d3"></span></div>
+    <label>Broker 地址（留空则用 ESP32 固件内默认值）</label>
+    <input id="mqHost" placeholder="xxxxxxxx.s1.eu.hivemq.cloud" autocomplete="off">
+    <div class="row">
+      <div><label>ESP32 TLS 端口</label><input id="mqPort" value="8883"></div>
+      <div><label>浏览器 WSS 端口</label><input id="mqWs" value="8884"></div>
+    </div>
+    <label>用户名</label>
+    <input id="mqUser" autocomplete="off">
+    <label>密码</label>
+    <input id="mqPass" type="password" autocomplete="off">
+    <label>主题前缀（须与固件 TOPIC_PREFIX 一致）</label>
+    <input id="mqPrefix" value="esp32">
+    <button id="mqBtn">连接 MQTT</button>
+    <div class="msg" id="m3"></div>
+  </div>
+
+  <!-- 4. 舵机 -->
+  <div class="card off" id="c4">
+    <div class="hd"><span class="n">4</span>舵机控制<span class="dot" id="d4"></span></div>
+    <div class="srv">
+      <div class="top"><span>舵机 1 · D18</span><span class="val" id="v1">90°</span></div>
+      <input type="range" id="s1" min="0" max="180" value="90">
+    </div>
+    <div class="srv">
+      <div class="top"><span>舵机 2 · D19</span><span class="val" id="v2">90°</span></div>
+      <input type="range" id="s2" min="0" max="180" value="90">
+    </div>
+    <button id="centerBtn" class="ghost">全部回中 (90°)</button>
+    <div class="msg" id="m4"></div>
+  </div>
+
+  <div class="card">
+    <div class="hd">日志</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const SVC = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // 网页 -> ESP32
+const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // ESP32 -> 网页
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+let device, rxChar, lineBuf = '';
+let client = null, topicSet = '', topicState = '', topicStatus = '';
+
+function log(s){
+  const el = $('log');
+  el.textContent += new Date().toLocaleTimeString() + '  ' + s + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function msg(id, text, cls=''){ const e=$(id); e.textContent=text; e.className='msg '+cls; }
+function dot(id, state){ $(id).className = 'dot' + (state==='on'?' on':state==='bad'?' bad':''); }
+function enable(id, on){ $(id).classList.toggle('off', !on); }
+
+// ---------- BLE ----------
+$('btBtn').onclick = async () => {
+  if (!navigator.bluetooth) { msg('m1','此浏览器不支持 Web Bluetooth，请用 Chrome / Edge','err'); return; }
+  try {
+    msg('m1','正在选择设备…');
+    device = await navigator.bluetooth.requestDevice({ filters:[{ services:[SVC] }] });
+    device.addEventListener('gattserverdisconnected', onBleGone);
+    const server = await device.gatt.connect();
+    const svc    = await server.getPrimaryService(SVC);
+    rxChar       = await svc.getCharacteristic(RX);
+    const txc    = await svc.getCharacteristic(TX);
+    await txc.startNotifications();
+    txc.addEventListener('characteristicvaluechanged', onBleData);
+
+    dot('d1','on');
+    msg('m1','已连接: ' + device.name, 'ok');
+    log('BLE 已连接 ' + device.name);
+    $('btBtn').disabled = true; $('btOff').disabled = false;
+    enable('c2', true);
+    send({cmd:'status'});
+  } catch(e){ msg('m1','连接失败: ' + e.message, 'err'); dot('d1','bad'); }
+};
+
+$('btOff').onclick = () => { if (device && device.gatt.connected) device.gatt.disconnect(); };
+
+function onBleGone(){
+  dot('d1','bad'); msg('m1','蓝牙已断开','err'); log('BLE 断开');
+  $('btBtn').disabled = false; $('btOff').disabled = true;
+  enable('c2', false); enable('c3', false);
+}
+
+function onBleData(ev){
+  lineBuf += dec.decode(ev.target.value);
+  let i;
+  while ((i = lineBuf.indexOf('\n')) >= 0) {
+    const line = lineBuf.slice(0, i).trim();
+    lineBuf = lineBuf.slice(i + 1);
+    if (line) { try { handle(JSON.parse(line)); } catch(e){ log('解析失败: ' + line); } }
+  }
+}
+
+async function send(obj){
+  if (!rxChar) return;
+  const data = enc.encode(JSON.stringify(obj) + '\n');
+  for (let i = 0; i < data.length; i += 180)
+    await rxChar.writeValue(data.slice(i, i + 180));
+}
+
+function handle(d){
+  switch(d.t){
+    case 'net': {
+      const o = document.createElement('option');
+      o.value = d.ssid;
+      o.textContent = `${d.ssid}  (${d.rssi}dBm)${d.lock ? ' 🔒' : ''}`;
+      $('ssidSel').appendChild(o);
+      break;
+    }
+    case 'scan_done':
+      msg('m2', `扫描完成，找到 ${$('ssidSel').options.length - 1} 个网络`, 'ok');
+      $('scanBtn').disabled = false;
+      break;
+    case 'wifi':
+      $('wifiBtn').disabled = false;
+      if (d.ok){ dot('d2','on'); msg('m2','WiFi 已连接，IP: ' + d.ip,'ok'); enable('c3', true); }
+      else     { dot('d2','bad'); msg('m2','WiFi 连接失败，检查密码','err'); }
+      break;
+    case 'mqtt':
+      if (d.ok){ dot('d3','on'); log('ESP32 已连接 MQTT'); }
+      else     { dot('d3','bad'); msg('m3','ESP32 连接 MQTT 失败 rc=' + d.rc,'err'); }
+      break;
+    case 'status':
+      if (d.wifi){ dot('d2','on'); enable('c3', true); msg('m2','已连接 ' + d.ssid + ' · ' + d.ip,'ok'); }
+      if (d.mqtt) dot('d3','on');
+      break;
+    case 'log': log('ESP32: ' + d.m); break;
+  }
+}
+
+// ---------- WiFi ----------
+$('scanBtn').onclick = () => {
+  $('ssidSel').innerHTML = '<option value="">— 选择网络 —</option>';
+  $('scanBtn').disabled = true;
+  msg('m2','扫描中…');
+  send({cmd:'scan'});
+};
+
+$('wifiBtn').onclick = () => {
+  const ssid = $('ssidSel').value;
+  if (!ssid){ msg('m2','请先选择一个网络','err'); return; }
+  $('wifiBtn').disabled = true;
+  msg('m2','连接中，最长 20 秒…');
+  send({cmd:'wifi', ssid, pass: $('wifiPass').value});
+};
+
+// ---------- MQTT ----------
+$('mqBtn').onclick = async () => {
+  const host = $('mqHost').value.trim().replace(/^.*:\/\//,'').replace(/\/.*$/,'');
+  const user = $('mqUser').value.trim();
+  const pass = $('mqPass').value;
+  const prefix = $('mqPrefix').value.trim() || 'esp32';
+
+  // 1) 先让 ESP32 连
+  msg('m3','已下发配置，等待 ESP32 连接 HiveMQ…');
+  await send({cmd:'mqtt', host, port: parseInt($('mqPort').value) || 8883, user, pass});
+
+  // 2) 浏览器自己也连（走 WSS）
+  if (!host || !user || !pass){
+    msg('m3','浏览器端需要填写完整的地址/用户名/密码才能连接','err');
+    return;
+  }
+  const url = `wss://${host}:${$('mqWs').value || 8884}/mqtt`;
+  log('浏览器连接 ' + url);
+
+  topicSet    = prefix + '/servo/set';
+  topicState  = prefix + '/servo/state';
+  topicStatus = prefix + '/status';
+
+  if (client) { try { client.end(true); } catch(e){} }
+  client = mqtt.connect(url, {
+    username: user, password: pass,
+    clientId: 'web-' + Math.random().toString(16).slice(2, 10),
+    clean: true, reconnectPeriod: 4000, connectTimeout: 8000
+  });
+
+  client.on('connect', () => {
+    dot('d3','on');
+    msg('m3','浏览器已连接 HiveMQ','ok');
+    log('浏览器 MQTT 已连接');
+    client.subscribe([topicState, topicStatus]);
+    enable('c4', true);
+    dot('d4','on');
+    publish();                       // 推一次初始 90/90
+  });
+  client.on('error',   e => { dot('d3','bad'); msg('m3','MQTT 错误: ' + e.message,'err'); log('MQTT 错误 ' + e.message); });
+  client.on('close',   () => { dot('d4',''); });
+  client.on('message', (t, p) => {
+    const s = p.toString();
+    log(`← ${t}: ${s}`);
+    if (t === topicStatus){
+      msg('m4', 'ESP32: ' + s, s === 'online' ? 'ok' : 'err');
+      dot('d4', s === 'online' ? 'on' : 'bad');
+    }
+    if (t === topicState){
+      try {
+        const d = JSON.parse(s);
+        if (d.s1 != null){ $('s1').value = d.s1; $('v1').textContent = d.s1 + '°'; }
+        if (d.s2 != null){ $('s2').value = d.s2; $('v2').textContent = d.s2 + '°'; }
+      } catch(e){}
+    }
+  });
+};
+
+// ---------- 滑动条 ----------
+let timer = null;
+function publish(){
+  if (!client || !client.connected) return;
+  const payload = JSON.stringify({ s1: +$('s1').value, s2: +$('s2').value });
+  client.publish(topicSet, payload, { qos: 0 });
+  log('→ ' + topicSet + ': ' + payload);
+}
+function onSlide(){
+  $('v1').textContent = $('s1').value + '°';
+  $('v2').textContent = $('s2').value + '°';
+  if (timer) return;                       // 节流 ~80ms，避免刷屏
+  timer = setTimeout(() => { timer = null; publish(); }, 80);
+}
+$('s1').addEventListener('input', onSlide);
+$('s2').addEventListener('input', onSlide);
+$('centerBtn').onclick = () => { $('s1').value = 90; $('s2').value = 90; onSlide(); publish(); };
+</script>
+</body>
+</html>
